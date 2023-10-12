@@ -5,10 +5,10 @@ module Main (main) where
 
 import qualified PlutusTx.Prelude as P
 import qualified PlutusTx.Builtins as P
-import Plutus.Crypto.BlsField ( Scalar, mkScalar, reverseByteString ) 
+import Plutus.Crypto.BlsField ( Scalar (..), mkScalar, reverseByteString )
 import Plutus.Crypto.Plonk (Proof (..), PreInputs (..), ProofFast (..)
                            , PreInputsFast (..), convertToFastProof
-                           , convertToFastPreInputs, verifyPlonk )
+                           , convertToFastPreInputs, verifyPlonk, verifyPlonkSnarkjs)
 
 import ReadSnarkjs ( ProofJSONSnarkjs(..), PreInputsJSONSnarkjs(..) )
 
@@ -18,9 +18,12 @@ import GHC.Generics ( Generic )
 import qualified Data.ByteString.Lazy as BL
 import Data.ByteString ( pack )
 import Data.Word ()
+import Bitwise (writeBitByteString)
+import PlutusTx.Builtins (bls12_381_G1_zero)
+import qualified PlutusCore as P
 
 -- Create a quick type for importing a test vector Proof via JSON.
-data ProofJSON = ProofJSON 
+data ProofJSON = ProofJSON
     { commitment_a :: [Integer]
     , commitment_b :: [Integer]
     , commitment_c :: [Integer]
@@ -42,24 +45,24 @@ instance FromJSON ProofJSON
 instance ToJSON ProofJSON
 
 -- Create a quick type for importing a test vector PreInputs via JSON.
-data PreInputsJSON = PreInputsJSON 
-    { n_public      :: Integer                     
-    , pow           :: Integer                     
+data PreInputsJSON = PreInputsJSON
+    { n_public      :: Integer
+    , pow           :: Integer
     , k_1           :: [Integer]
     , k_2           :: [Integer]
     , q_m           :: [Integer]
     , q_l           :: [Integer]
-    , q_r           :: [Integer] 
+    , q_r           :: [Integer]
     , q_o           :: [Integer]
     , q_c           :: [Integer]
     , s_sig1_pre_in :: [Integer]
     , s_sig2_pre_in :: [Integer]
     , s_sig3_pre_in :: [Integer]
     , x_2           :: [Integer]
-    , gen           :: [Integer] 
+    , gen           :: [Integer]
 } deriving (Show, Generic)
 
-instance FromJSON PreInputsJSON 
+instance FromJSON PreInputsJSON
 instance ToJSON PreInputsJSON
 
 convertIntegersByteString :: [Integer] -> P.BuiltinByteString
@@ -95,33 +98,98 @@ convertPreInputs preIn = PreInputs
     , k1        = mkScalar . convertMontgomery $ k_1 preIn
     , k2        = mkScalar . convertMontgomery $ k_2 preIn
     , qM        = P.bls12_381_G1_uncompress . convertIntegersByteString $ q_m preIn
-    , qL        = P.bls12_381_G1_uncompress . convertIntegersByteString $ q_l preIn 
+    , qL        = P.bls12_381_G1_uncompress . convertIntegersByteString $ q_l preIn
     , qR        = P.bls12_381_G1_uncompress . convertIntegersByteString $ q_r preIn
     , qO        = P.bls12_381_G1_uncompress . convertIntegersByteString $ q_o preIn
     , qC        = P.bls12_381_G1_uncompress . convertIntegersByteString $ q_c preIn
     , sSig1     = P.bls12_381_G1_uncompress . convertIntegersByteString $ s_sig1_pre_in preIn
     , sSig2     = P.bls12_381_G1_uncompress . convertIntegersByteString $ s_sig2_pre_in preIn
     , sSig3     = P.bls12_381_G1_uncompress . convertIntegersByteString $ s_sig3_pre_in preIn
-    , x2        = P.bls12_381_G2_uncompress . convertIntegersByteString $ x_2 preIn 
+    , x2        = P.bls12_381_G2_uncompress . convertIntegersByteString $ x_2 preIn
     , generator = mkScalar . convertMontgomery $ gen preIn
+    }
+
+
+
+convertIntG1ToBS :: (Integer, Integer) -> P.BuiltinByteString
+convertIntG1ToBS (x,y)
+    | x == 0 && y == 1                  = P.bls12_381_G1_compress P.bls12_381_G1_zero
+    | P.lengthOfByteString xBs == 48    = go xBs y
+    | otherwise                         = go (pad xBs) y
+        where p = 4002409555221667393417789825735904156556882819939007885332058136124031650490837864442687629129015664037894272559787
+              xBs = P.integerToByteString x
+              xBsG1 x = reverseByteString (P.writeBitByteString x 7 True)
+              go :: P.BuiltinByteString -> Integer -> P.BuiltinByteString
+              go x y
+                | y < (p-y) `mod` p = P.bls12_381_G1_compress . P.bls12_381_G1_uncompress $ xBsG1 x
+                | otherwise         = P.bls12_381_G1_compress . P.bls12_381_G1_neg . P.bls12_381_G1_uncompress $ xBsG1 x
+              pad :: P.BuiltinByteString -> P.BuiltinByteString
+              pad x = x <> P.consByteString 0 P.emptyByteString
+
+-- this function is wrong (not sure yet how to handle the concatenation of two 384 bit integers) in the field F(q^2) of G2.
+-- Maybe the metric is just quadratic addition?
+convertIntG2ToBS :: (Integer, Integer) -> P.BuiltinByteString
+convertIntG2ToBS (x,y)
+    | x == 0 && y == 1  = P.bls12_381_G2_compress P.bls12_381_G2_zero
+    | otherwise         = if P.lengthOfByteString xBs == 96
+                          then go xBs y
+                          else go (pad xBs) y
+        where p = 4002409555221667393417789825735904156556882819939007885332058136124031650490837864442687629129015664037894272559787
+              xBs = P.integerToByteString x
+              xBsG1 x = reverseByteString (P.writeBitByteString x 7 True)
+              go :: P.BuiltinByteString -> Integer -> P.BuiltinByteString
+              go x y
+              -- not sure if this will be correct as y > p (y is two concatenated ~384 bit integers)
+              -- so y < (p-y) `mod` p will always be false
+                | y < (p-y) `mod` p = xBsG1 x
+                | otherwise         = xBsG1 x
+              pad :: P.BuiltinByteString -> P.BuiltinByteString
+              pad x = x <> P.consByteString 0 P.emptyByteString
+
+convertPreInputsSnarkjs :: PreInputsJSONSnarkjs -> PreInputs
+convertPreInputsSnarkjs preIn =
+    let g :: [String] -> (Integer, Integer)
+        g (x:y:xs) = (read x, read y)
+        f = P.bls12_381_G1_uncompress . convertIntG1ToBS . g
+        h x = read x :: Integer
+        ((x1:x2:xs):(y1:y2:ys):xys) = x_2' preIn
+        xInt :: Integer
+        xInt = read x1 + read x2 * 2^384
+        yInt :: Integer
+        yInt = read y1 + read y2 * 2^384
+    in PreInputs
+    { nPublic   = nPublic' preIn
+    , power     = power' preIn
+    , k1        = mkScalar . h $ k_1' preIn
+    , k2        = mkScalar . h $ k_2' preIn
+    , qM        = f $ qm preIn
+    , qL        = f $ ql preIn
+    , qR        = f $ qr preIn
+    , qO        = f $ qo preIn
+    , qC        = f $ qc preIn
+    , sSig1     = f $ s1 preIn
+    , sSig2     = f $ s2 preIn
+    , sSig3     = f $ s3 preIn
+    , x2        = P.bls12_381_G2_uncompress . convertIntG2ToBS $ (xInt, yInt)
+    , generator = mkScalar . h $ w preIn
     }
 
 convertProofSnarkjs :: ProofJSONSnarkjs -> Proof
 convertProofSnarkjs proof =
-    let f x = reverseByteString (P.writeBitByteString (P.integerToByteString x) 7 True)
-        f' x = reverseByteString (P.writeBitByteString (P.integerToByteString x <> P.consByteString 0 P.emptyByteString ) 7 True)
-        g x = read . head $ x :: Integer
+    let g :: [String] -> (Integer, Integer)
+        g (x:y:xs) = (read x, read y)
+        f = convertIntG1ToBS . g
         h x = read x :: Integer
     in Proof
-        { commitmentA = f . g $ a proof
-        , commitmentB = f . g $ b proof
-        , commitmentC = f . g $ c proof
-        , commitmentZ = f . g $ z proof
-        , tLow        = f . g $ t1 proof
-        , tMid        = f . g $ t2 proof
-        , tHigh       = f . g $ t3 proof
-        , wOmega      = f' . g $ wxi proof
-        , wOmegaZeta  = f . g $ wxiw proof
+        { commitmentA = f $ a proof
+        , commitmentB = f $ b proof
+        , commitmentC = f $ c proof
+        , commitmentZ = f $ z proof
+        , tLow        = f $ t1 proof
+        , tMid        = f $ t2 proof
+        , tHigh       = f $ t3 proof
+        , wOmega      = f $ wxi proof
+        , wOmegaZeta  = f $ wxiw proof
         , aEval       = h $ eval_a proof
         , bEval       = h $ eval_b proof
         , cEval       = h $ eval_c proof
@@ -129,31 +197,6 @@ convertProofSnarkjs proof =
         , sSig2P      = h $ eval_s2 proof
         , zOmega      = h $ eval_zw proof
         }
-
-convertPreInputsSnarkjs :: PreInputsJSONSnarkjs -> PreInputs
-convertPreInputsSnarkjs preIn = 
-    let f x = P.bls12_381_G1_uncompress (reverseByteString (P.writeBitByteString (P.integerToByteString x) 7 True))
-        f' x = P.bls12_381_G1_uncompress (reverseByteString (P.writeBitByteString (P.integerToByteString x <> P.consByteString 0 P.emptyByteString ) 7 True))
-        fG2 x = P.bls12_381_G2_uncompress (reverseByteString (P.writeBitByteString (P.integerToByteString x) 7 True))
-        g x = read . head $ x :: Integer
-        h x = read x :: Integer
-        (x2a: x2b: xs) = head $ x_2' preIn
-    in PreInputs
-    { nPublic   = nPublic' preIn
-    , power     = power' preIn
-    , k1        = mkScalar . h $ k_1' preIn
-    , k2        = mkScalar . h $ k_2' preIn
-    , qM        = f . g $ qm preIn
-    , qL        = f' . g $ ql preIn
-    , qR        = f . g $ qr preIn
-    , qO        = f . g $ qo preIn
-    , qC        = P.bls12_381_G1_zero
-    , sSig1     = f . g $ s1 preIn
-    , sSig2     = f . g $ s2 preIn
-    , sSig3     = f . g $ s3 preIn
-    , x2        = fG2 $ h x2a + h  x2b * 2^384
-    , generator = mkScalar . h $ w preIn
-    }
 
 main :: IO ()
 main = do
@@ -176,10 +219,27 @@ main = do
         Nothing -> print "Could not deserialize Proof test vector"
     case maybeProofSnarkjs of
         Just proofSnarkjs -> case maybePreInSnarkjs of
-            Just preInSnarkjs -> do let i = convertPreInputsSnarkjs preInSnarkjs 
+            Just preInSnarkjs -> do let i = convertPreInputsSnarkjs preInSnarkjs
                                     let p = convertProofSnarkjs proofSnarkjs
                                     let iFastSnarkjs = convertToFastPreInputs i
                                     let pFastSnarkjs = convertToFastProof iFastSnarkjs p
-                                    print $ verifyPlonk iFastSnarkjs [20] pFastSnarkjs
+                                    -- print $ qL i
+                                    -- print $ verifyPlonkFast iFastSnarkjs [20] pFastSnarkjs
+                                    print $ verifyPlonkSnarkjs i [20] p
             Nothing -> print "Could not deserialize PreInputs test vector snarkjs"
         Nothing -> print "Could not deserialize Proof test vector snarkjs"
+
+                                    -- let f = (\x -> P.writeBitByteString x 7 False ) . reverseByteString . P.bls12_381_G1_compress
+                                    -- let betaBs = P.keccak_256 $ f (qM' iFastSnarkjs)
+                                    --                                     <> f (qL' iFastSnarkjs)
+                                    --                                     <> f (qR' iFastSnarkjs)
+                                    --                                     <> f (qO' iFastSnarkjs)
+                                    --                                     <> f (qC' iFastSnarkjs)
+                                    --                                     <> f (sSig1' iFastSnarkjs)
+                                    --                                     <> f (sSig2' iFastSnarkjs)
+                                    --                                     <> f (sSig3' iFastSnarkjs)
+                                    --                                     <> reverseByteString (P.integerToByteString (unScalar (head (generators iFastSnarkjs))))
+                                    --                                     <> (f . P.bls12_381_G1_uncompress) (commitmentA' pFastSnarkjs)
+                                    --                                     <> (f . P.bls12_381_G1_uncompress) (commitmentB' pFastSnarkjs)
+                                    --                                     <> (f . P.bls12_381_G1_uncompress) (commitmentC' pFastSnarkjs)
+                                    -- print $ mkScalar $ (P.byteStringToInteger . reverseByteString) betaBs `P.modulo` 52435875175126190479447740508185965837690552500527637822603658699938581184513

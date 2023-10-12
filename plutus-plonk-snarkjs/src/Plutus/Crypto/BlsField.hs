@@ -6,7 +6,7 @@
 {-# OPTIONS_GHC -fno-specialise -fno-strictness -fno-spec-constr #-}
 
 module Plutus.Crypto.BlsField
-( bls12_381_field_prime
+( scalar_field_prime
 , Scalar (..)
 , mkScalar
 , MultiplicativeGroup (..)
@@ -68,8 +68,8 @@ import PlutusTx.Builtins
 
 -- The prime order of the generator in the field. So, g^order = id,
 -- or more general, for any element x in the field, x^order = id.
-bls12_381_field_prime :: Integer
-bls12_381_field_prime = 52435875175126190479447740508185965837690552500527637822603658699938581184513
+scalar_field_prime :: Integer
+scalar_field_prime = 52435875175126190479447740508185965837690552500527637822603658699938581184513
 
 newtype Scalar = Scalar { unScalar :: Integer} deriving (Haskell.Show)
 makeLift ''Scalar
@@ -81,7 +81,7 @@ makeIsDataIndexed ''Scalar [('Scalar,0)]
 -- (to make sure they are field elements).
 {-# INLINABLE mkScalar #-}
 mkScalar :: Integer -> Scalar
-mkScalar n | 0 <= n && n < bls12_381_field_prime = Scalar n
+mkScalar n | 0 <= n && n < scalar_field_prime = Scalar n
            | otherwise                           = error ()
 
 instance Eq Scalar where
@@ -90,7 +90,7 @@ instance Eq Scalar where
 
 instance AdditiveSemigroup Scalar where
     {-# INLINABLE (+) #-}
-    (+) (Scalar a) (Scalar b) = Scalar $ (a+b) `modulo` bls12_381_field_prime
+    (+) (Scalar a) (Scalar b) = Scalar $ (a+b) `modulo` scalar_field_prime
 
 instance AdditiveMonoid Scalar where
     {-# INLINABLE zero #-}
@@ -98,11 +98,11 @@ instance AdditiveMonoid Scalar where
 
 instance AdditiveGroup Scalar where
     {-# INLINABLE (-) #-}
-    (-) (Scalar a) (Scalar b) = Scalar $ (a-b) `modulo` bls12_381_field_prime
+    (-) (Scalar a) (Scalar b) = Scalar $ (a-b) `modulo` scalar_field_prime
 
 instance MultiplicativeSemigroup Scalar where
     {-# INLINABLE (*) #-}
-    (*) (Scalar a) (Scalar b) = Scalar $ (a*b) `modulo` bls12_381_field_prime
+    (*) (Scalar a) (Scalar b) = Scalar $ (a*b) `modulo` scalar_field_prime
 
 instance MultiplicativeMonoid Scalar where
     {-# INLINABLE one #-}
@@ -145,7 +145,7 @@ instance Module Integer Scalar where
 instance MultiplicativeGroup Scalar where
     {-# INLINABLE div #-}
     div a b | b == Scalar 0 = error ()
-            | otherwise     = a * scale (bls12_381_field_prime - 2) b -- use Fermat little theorem
+            | otherwise     = a * scale (scalar_field_prime - 2) b -- use Fermat little theorem
     {-# INLINABLE recip #-}
     recip = div one
 
