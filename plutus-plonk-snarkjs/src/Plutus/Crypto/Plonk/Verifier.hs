@@ -10,10 +10,10 @@ module Plutus.Crypto.Plonk.Verifier
 ) where
 
 import Plutus.Crypto.Plonk.Inputs (PreInputs (..), Proof (..), PreInputsFast (..), ProofFast (..))
-import Plutus.Crypto.BlsField (mkScalar, Scalar (..), MultiplicativeGroup (..), powerOfTwoExponentiation, reverseByteString)
+import Plutus.Crypto.BlsField (mkScalar, Scalar (..), MultiplicativeGroup (..), powerOfTwoExponentiation, reverseByteString, scalar_field_prime)
 import PlutusTx.Prelude (Integer, Bool (..), bls12_381_G1_uncompress, bls12_381_G1_scalarMul, bls12_381_G1_generator
                         ,BuiltinBLS12_381_G1_Element, sum, BuiltinBLS12_381_G2_Element, bls12_381_finalVerify
-                        ,bls12_381_G2_generator, bls12_381_millerLoop, (>), otherwise, enumFromTo, (.), (&&), divide, error, (<), (||), even, (<>), takeByteString, ($), integerToByteString, bls12_381_G1_compress, keccak_256, modulo, writeBitByteString, bls12_381_G2_neg)
+                        ,bls12_381_G2_generator, bls12_381_millerLoop, (>), otherwise, enumFromTo, (.), (&&), divide, error, (<), (||), even, (<>), takeByteString, ($), integerToByteString, bls12_381_G1_compress, keccak_256, modulo, writeBitByteString, bls12_381_G2_neg, BuiltinByteString, length, lengthOfByteString, emptyByteString, sliceByteString)
 import PlutusTx.Eq (Eq (..))
 import PlutusTx.List (map, zipWith, foldr, head, and)
 import PlutusTx.Numeric
@@ -24,7 +24,7 @@ import PlutusTx.Numeric
       MultiplicativeMonoid(one),
       MultiplicativeSemigroup((*)),
       negate )
-import PlutusTx.Builtins (blake2b_256, byteStringToInteger)
+import PlutusTx.Builtins (blake2b_256, byteStringToInteger, consByteString)
 import PlutusCore (DefaultFun(IntegerToByteString))
 
 -- a general vanilla plonk verifier optimised. 
@@ -102,6 +102,13 @@ exponentiate x n
     | even n            = exponentiate x (n `divide` 2) * exponentiate x (n `divide` 2)
     | otherwise         = x * exponentiate x ((n - 1) `divide` 2) * exponentiate x ((n - 1) `divide` 2)
 
+{-# INLINABLE padTo32Bytes #-}
+padTo32Bytes :: BuiltinByteString -> BuiltinByteString
+padTo32Bytes bs
+    | lengthOfByteString bs == 32 = bs
+    | lengthOfByteString bs < 32 = padTo32Bytes (bs <> consByteString 0 emptyByteString)
+    | otherwise = error ()
+
 {-# INLINEABLE verifyPlonkSnarkjs #-}
 verifyPlonkSnarkjs :: PreInputs -> [Integer] -> Proof -> Bool
 verifyPlonkSnarkjs preInputs@(PreInputs nPub p k1 k2 qM qL qR qO qC sSig1 sSig2 sSig3 x2 gen)
@@ -124,21 +131,45 @@ verifyPlonkSnarkjs preInputs@(PreInputs nPub p k1 k2 qM qL qR qO qC sSig1 sSig2 
     , (mkScalar -> evalZOmega) <- ez
     , let (w1 : wxs) = map (negate . mkScalar) pubInputs
     =
-        -- this step could be done offchain?
     let n = exponentiate 2 p
-        -- get the transcript variables
-        beta = Scalar 0xfeb7cbc91fc23ca4aba24fd22d3b4fc391c449a5b09d7acf5e551e09b0622bd
-        gamma = Scalar 0x2341d97b49ce6a0e361cf027a78bb90c7f1173bac0dbeb1d972e4a15bee1f4b2
-        alpha = Scalar 0x56ef2e8d9e2aa572d70f2a07506ce1b7796df1c69d0593b39fa36951ba5eccdc
-        zeta = Scalar 0x7360927c96dd2116de356670c44c7158e8f08e73d310938e2b53f0a2b0b4b28e
-        v = Scalar 0x13bb32119ee07d883f0767991af44581bca319de8a92cd92210f74f90614994a
-        u = Scalar 0x175a7e907fea7238c13a11a5a5ab7c2d6c8c780a53fda5bfd5aa409b728c4bd7
+        betaBs = keccak_256 $ bls12_381_G1_compress qM
+                            <> bls12_381_G1_compress qL
+                            <> bls12_381_G1_compress qR
+                            <> bls12_381_G1_compress qO
+                            <> bls12_381_G1_compress qC
+                            <> bls12_381_G1_compress sSig1
+                            <> bls12_381_G1_compress sSig2
+                            <> bls12_381_G1_compress sSig3
+                            <> (reverseByteString . padTo32Bytes . integerToByteString . head) pubInputs  
+                            <> ca
+                            <> cb
+                            <> cc
+        beta = mkScalar $ (byteStringToInteger . reverseByteString) betaBs `modulo` scalar_field_prime
+        gammaBs = keccak_256 $ (reverseByteString . padTo32Bytes . integerToByteString . unScalar ) beta
+        gamma = mkScalar $ (byteStringToInteger . reverseByteString) gammaBs `modulo` scalar_field_prime
+        alphaBs = keccak_256 $ (reverseByteString . padTo32Bytes . integerToByteString . unScalar ) beta
+                             <> (reverseByteString . padTo32Bytes . integerToByteString . unScalar ) gamma
+                             <> cz
+        alpha = mkScalar $ (byteStringToInteger . reverseByteString) alphaBs `modulo` scalar_field_prime
+        zetaBs = keccak_256 $ (reverseByteString . padTo32Bytes . integerToByteString . unScalar ) alpha
+                             <> ctl
+                             <> ctm
+                             <> cth
+        zeta = mkScalar $ (byteStringToInteger . reverseByteString) zetaBs `modulo` scalar_field_prime
+        vBs = keccak_256 $ (reverseByteString . padTo32Bytes . integerToByteString . unScalar ) zeta
+                            <> (reverseByteString . padTo32Bytes . integerToByteString) ea
+                            <> (reverseByteString . padTo32Bytes . integerToByteString) eb
+                            <> (reverseByteString . padTo32Bytes . integerToByteString) ec
+                            <> (reverseByteString . padTo32Bytes . integerToByteString) es1
+                            <> (reverseByteString . padTo32Bytes . integerToByteString) es2
+                            <> (reverseByteString . padTo32Bytes . integerToByteString) ez
+        v = mkScalar $ (byteStringToInteger . reverseByteString) vBs `modulo` scalar_field_prime
+        uBs = keccak_256 $ cwo <> cwz
+        u = mkScalar $ (byteStringToInteger . reverseByteString) uBs `modulo` scalar_field_prime
         -- this is Z_H(zeta) in the plonk paper
         zeroPoly = scale n zeta - one
-        -- set gen to one for snarkjs
         -- this is L_1(zeta) and the higher order L_i
         (lagrangePoly1 : lagrangePolyXs) = map (\i -> (scale i gen * zeroPoly) * recip (mkScalar n * (zeta - scale i gen))) (enumFromTo 0 nPub)
-      --   lagPol1 = w * zeroPoly * recip (mkScalar n * (zeta - w))
         -- this is PI(zeta) in the plonk paper
         piZeta = w1 * lagrangePoly1 + sum (zipWith (*) wxs lagrangePolyXs)
         -- this is r_0 in the plonk paper
@@ -156,8 +187,9 @@ verifyPlonkSnarkjs preInputs@(PreInputs nPub p k1 k2 qM qL qR qO qC sSig1 sSig2 
         batchPolyCommitFull = batchPolyCommitG1 + scale v (commA + scale v (commB + scale v (commC + scale v (sSig1 + scale v sSig2))))
         -- this is [E]_1 in the plonk paper
         groupEncodedBatchEval = scale (negate r0 + v * (evalA + v * (evalB + v * (evalC + v * (evalS1 + v * evalS2)))) + u*evalZOmega ) bls12_381_G1_generator
-    in
+    in 
     -- the final check that under the pairing.
     bls12_381_finalVerify 
       (bls12_381_millerLoop (commWOmega + scale u commWOmegaZeta) x2) 
       (bls12_381_millerLoop (scale zeta commWOmega + scale (u*zeta*gen) commWOmegaZeta + batchPolyCommitFull - groupEncodedBatchEval) bls12_381_G2_generator)
+    -- && beta' == beta

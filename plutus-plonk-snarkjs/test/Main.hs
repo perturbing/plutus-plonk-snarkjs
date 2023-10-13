@@ -128,13 +128,14 @@ convertIntG1ToBS (x,y)
 
 -- this function is wrong (not sure yet how to handle the concatenation of two 384 bit integers) in the field F(q^2) of G2.
 -- Maybe the metric is just quadratic addition?
-convertIntG2ToBS :: (Integer, Integer) -> P.BuiltinByteString
-convertIntG2ToBS (x,y)
+convertIntG2ToBS :: (Integer, (Integer,Integer)) -> P.BuiltinByteString
+convertIntG2ToBS (x,(y1,y2))
     | x == 0 && y == 1  = P.bls12_381_G2_compress P.bls12_381_G2_zero
     | otherwise         = if P.lengthOfByteString xBs == 96
                           then go xBs y
                           else go (pad xBs) y
-        where p = 4002409555221667393417789825735904156556882819939007885332058136124031650490837864442687629129015664037894272559787
+        where y = y1 + y2 * 2^384
+              p = 4002409555221667393417789825735904156556882819939007885332058136124031650490837864442687629129015664037894272559787
               xBs = P.integerToByteString x
               xBsG1 x = reverseByteString (P.writeBitByteString x 7 True)
               go :: P.BuiltinByteString -> Integer -> P.BuiltinByteString
@@ -155,8 +156,8 @@ convertPreInputsSnarkjs preIn =
         ((x1:x2:xs):(y1:y2:ys):xys) = x_2' preIn
         xInt :: Integer
         xInt = read x1 + read x2 * 2^384
-        yInt :: Integer
-        yInt = read y1 + read y2 * 2^384
+        yInt :: (Integer, Integer)
+        yInt = (read y1,read y2)
     in PreInputs
     { nPublic   = nPublic' preIn
     , power     = power' preIn

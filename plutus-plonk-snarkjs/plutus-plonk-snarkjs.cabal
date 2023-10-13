@@ -17,6 +17,7 @@ library
     build-depends:    base >= 4.2 && < 5
                     , plutus-tx
                     , plutus-core
+                    , bytestring
 
 test-suite run-vector-test
   type: exitcode-stdio-1.0
